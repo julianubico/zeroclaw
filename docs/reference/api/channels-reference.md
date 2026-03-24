@@ -45,9 +45,10 @@ When running `zeroclaw channel start` (or daemon mode), Telegram and Discord now
 - `/models <provider>` — switch provider for the current sender session
 - `/model` — show current model and cached model IDs (if available)
 - `/model <model-id>` — switch model for the current sender session
-- `/config` — show the current provider/model/route selection for this sender session
+- `/status` — show the current provider/model/route selection for this sender session
 - `/new` — clear conversation history and start a fresh session
 - `/stop` — cancel the current in-flight response for this sender scope
+- `/config` — alias for `/status`
 
 Notes:
 

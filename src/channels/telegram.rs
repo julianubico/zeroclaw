@@ -3380,7 +3380,8 @@ mod tests {
         assert!(command_names.contains(&"stop"));
         assert!(command_names.contains(&"models"));
         assert!(command_names.contains(&"model"));
-        assert!(command_names.contains(&"config"));
+        assert!(command_names.contains(&"status"));
+        assert!(!command_names.contains(&"config"));
         assert!(!command_names.contains(&"bind"));
     }
 
