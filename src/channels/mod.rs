@@ -381,13 +381,15 @@ fn record_observed_reply_target(workspace_dir: &Path, channel: &str, reply_targe
     }
 }
 
-fn load_observed_reply_targets(workspace_dir: &Path, channel: &str) -> Vec<ObservedReplyTarget> {
+fn load_all_observed_reply_targets(workspace_dir: &Path) -> Vec<ObservedReplyTarget> {
     let path = observed_reply_targets_path(workspace_dir);
-    let Ok(contents) = std::fs::read_to_string(path) else {
+    let Ok(contents) = std::fs::read_to_string(&path) else {
         return Vec::new();
     };
 
-    let mut deduped: HashMap<String, ObservedReplyTarget> = HashMap::new();
+    let raw_line_count = contents.lines().count();
+
+    let mut deduped: HashMap<(String, String), ObservedReplyTarget> = HashMap::new();
     for line in contents.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -396,11 +398,9 @@ fn load_observed_reply_targets(workspace_dir: &Path, channel: &str) -> Vec<Obser
         let Ok(entry) = serde_json::from_str::<ObservedReplyTarget>(trimmed) else {
             continue;
         };
-        if !entry.channel.eq_ignore_ascii_case(channel) {
-            continue;
-        }
+        let key = (entry.channel.to_ascii_lowercase(), entry.reply_target.clone());
         deduped
-            .entry(entry.reply_target.clone())
+            .entry(key)
             .and_modify(|existing| {
                 if existing.last_seen_at < entry.last_seen_at {
                     *existing = entry.clone();
@@ -409,13 +409,54 @@ fn load_observed_reply_targets(workspace_dir: &Path, channel: &str) -> Vec<Obser
             .or_insert(entry);
     }
 
-    let mut entries: Vec<_> = deduped.into_values().collect();
+    let entries: Vec<_> = deduped.into_values().collect();
+
+    // Compact the file when it has >2x the deduplicated entry count.
+    if raw_line_count > entries.len() * 2 {
+        compact_observed_reply_targets(&path, &entries);
+    }
+
+    entries
+}
+
+fn compact_observed_reply_targets(path: &Path, entries: &[ObservedReplyTarget]) {
+    let mut buf = String::new();
+    for entry in entries {
+        if let Ok(json) = serde_json::to_string(entry) {
+            buf.push_str(&json);
+            buf.push('\n');
+        }
+    }
+    let _ = std::fs::write(path, buf);
+}
+
+fn load_observed_reply_targets(workspace_dir: &Path, channel: &str) -> Vec<ObservedReplyTarget> {
+    let mut entries: Vec<_> = load_all_observed_reply_targets(workspace_dir)
+        .into_iter()
+        .filter(|entry| entry.channel.eq_ignore_ascii_case(channel))
+        .collect();
     entries.sort_by(|a, b| {
         b.last_seen_at
             .cmp(&a.last_seen_at)
             .then_with(|| a.reply_target.cmp(&b.reply_target))
     });
     entries
+}
+
+fn clear_observed_reply_targets_for_sender(
+    workspace_dir: &Path,
+    channel: &str,
+    reply_target: &str,
+) {
+    let all = load_all_observed_reply_targets(workspace_dir);
+    let filtered: Vec<_> = all
+        .into_iter()
+        .filter(|entry| {
+            !(entry.channel.eq_ignore_ascii_case(channel) && entry.reply_target == reply_target)
+        })
+        .collect();
+    let path = observed_reply_targets_path(workspace_dir);
+    compact_observed_reply_targets(&path, &filtered);
 }
 
 const SYSTEMD_STATUS_ARGS: [&str; 3] = ["--user", "is-active", "zeroclaw.service"];
@@ -1151,11 +1192,20 @@ fn chat_level_reply_target(reply_target: &str) -> Option<&str> {
     reply_target.split_once(':').map(|(chat_id, _)| chat_id)
 }
 
+fn f64_option_eq(a: Option<f64>, b: Option<f64>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(x), Some(y)) => (x - y).abs() < f64::EPSILON,
+        _ => false,
+    }
+}
+
+/// Compare two route selections ignoring `source` (provenance tracking field).
 fn route_selection_matches(lhs: &ChannelRouteSelection, rhs: &ChannelRouteSelection) -> bool {
     lhs.provider == rhs.provider
         && lhs.model == rhs.model
         && lhs.api_key == rhs.api_key
-        && lhs.temperature == rhs.temperature
+        && f64_option_eq(lhs.temperature, rhs.temperature)
         && lhs.agent_name == rhs.agent_name
         && lhs.system_prompt == rhs.system_prompt
         && lhs.skills_directory == rhs.skills_directory
@@ -1358,27 +1408,58 @@ fn refreshed_new_session_system_prompt(ctx: &ChannelRuntimeContext) -> String {
     replace_available_skills_section(ctx.system_prompt.as_str(), &refreshed_skills)
 }
 
+fn has_word_boundary(text: &str, word: &str) -> bool {
+    for (i, _) in text.match_indices(word) {
+        let before_ok = i == 0
+            || text.as_bytes()[i - 1]
+                .is_ascii_whitespace()
+                || text.as_bytes()[i - 1] == b','
+                || text.as_bytes()[i - 1] == b'.';
+        let end = i + word.len();
+        let after_ok = end >= text.len()
+            || text.as_bytes()[end]
+                .is_ascii_whitespace()
+                || text.as_bytes()[end] == b','
+                || text.as_bytes()[end] == b'.'
+                || text.as_bytes()[end] == b':';
+        if before_ok && after_ok {
+            return true;
+        }
+    }
+    false
+}
+
+/// Minimum character length before auto-delegate heuristics even fire.
+const AUTO_DELEGATE_MIN_LEN: usize = 60;
+
 fn should_encourage_auto_delegate(message: &str) -> bool {
+    if message.len() < AUTO_DELEGATE_MIN_LEN {
+        return false;
+    }
+
     let normalized = message.to_ascii_lowercase();
     let clause_markers = [" and ", "\n", ";", " then ", " also ", ", then "];
     let distinct_clause_count = clause_markers
         .iter()
         .filter(|marker| normalized.contains(**marker))
         .count();
-    let compare_words = ["compare", "rank", "evaluate", "vs", "versus"];
+    let compare_words = ["compare", "rank", "evaluate", "versus"];
     let research_words = ["research", "investigate"];
     let synthesis_words = ["summarize", "synthesize", "write up", "report"];
-    let coding_words = ["implement", "code", "patch", "fix"];
+    let coding_words = ["implement", "patch"];
     let review_words = ["review", "audit"];
 
-    distinct_clause_count >= 2
-        || compare_words.iter().any(|word| normalized.contains(word))
-        || (research_words.iter().any(|word| normalized.contains(word))
-            && (synthesis_words.iter().any(|word| normalized.contains(word))
-                || coding_words.iter().any(|word| normalized.contains(word))))
-        || (coding_words.iter().any(|word| normalized.contains(word))
-            && review_words.iter().any(|word| normalized.contains(word)))
-        || (normalized.contains("write") && normalized.contains("review"))
+    let has = |word: &str| has_word_boundary(&normalized, word);
+
+    // Require multiple structural clause markers (not just one "and")
+    (distinct_clause_count >= 3)
+        || (compare_words.iter().any(|w| has(w))
+            && distinct_clause_count >= 1)
+        || (research_words.iter().any(|w| has(w))
+            && (synthesis_words.iter().any(|w| has(w))
+                || coding_words.iter().any(|w| has(w))))
+        || (coding_words.iter().any(|w| has(w))
+            && review_words.iter().any(|w| has(w)))
 }
 
 fn route_specific_skills_prompt(
@@ -2065,6 +2146,11 @@ async fn handle_runtime_command_if_needed(
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&sender_key);
+            clear_observed_reply_targets_for_sender(
+                ctx.workspace_dir.as_ref(),
+                &msg.channel,
+                &msg.reply_target,
+            );
             if let Some(ref store) = ctx.session_store {
                 if let Err(e) = store.delete_session(&sender_key) {
                     tracing::warn!("Failed to delete persisted session for {sender_key}: {e}");
