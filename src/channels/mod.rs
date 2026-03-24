@@ -854,6 +854,25 @@ fn supports_runtime_model_switch(channel_name: &str) -> bool {
     matches!(channel_name, "telegram" | "discord" | "matrix" | "slack")
 }
 
+pub(crate) fn runtime_slash_commands_for_channel(
+    channel_name: &str,
+) -> Vec<(&'static str, &'static str)> {
+    let mut commands = vec![
+        ("new", "Clear conversation history and start a fresh session"),
+        ("stop", "Cancel the current in-flight response"),
+    ];
+
+    if supports_runtime_model_switch(channel_name) {
+        commands.extend([
+            ("models", "List providers or switch provider for this session"),
+            ("model", "Show or switch the current model for this session"),
+            ("status", "Show the current provider, model, and route settings"),
+        ]);
+    }
+
+    commands
+}
+
 fn parse_runtime_command(channel_name: &str, content: &str) -> Option<ChannelRuntimeCommand> {
     let trimmed = content.trim();
     if !trimmed.starts_with('/') {
@@ -889,7 +908,7 @@ fn parse_runtime_command(channel_name: &str, content: &str) -> Option<ChannelRun
                 Some(ChannelRuntimeCommand::SetModel(model))
             }
         }
-        "/config" if supports_runtime_model_switch(channel_name) => {
+        "/config" | "/status" if supports_runtime_model_switch(channel_name) => {
             Some(ChannelRuntimeCommand::ShowConfig)
         }
         _ => None,
@@ -11175,6 +11194,48 @@ This is an example JSON object for profile settings."#;
     fn is_stop_command_rejects_stop_as_substring() {
         assert!(!is_stop_command("/stopwatch"));
         assert!(!is_stop_command("/stop-all"));
+    }
+
+    #[test]
+    fn runtime_slash_commands_for_telegram_include_runtime_controls() {
+        let commands = runtime_slash_commands_for_channel("telegram");
+        assert!(
+            commands.contains(&("new", "Clear conversation history and start a fresh session"))
+        );
+        assert!(commands.contains(&("stop", "Cancel the current in-flight response")));
+        assert!(
+            commands.contains(&("models", "List providers or switch provider for this session"))
+        );
+        assert!(commands.contains(&("model", "Show or switch the current model for this session")));
+        assert!(
+            commands
+                .contains(&("status", "Show the current provider, model, and route settings"))
+        );
+    }
+
+    #[test]
+    fn runtime_slash_commands_for_cli_exclude_model_switching() {
+        let commands = runtime_slash_commands_for_channel("cli");
+        assert!(
+            commands.contains(&("new", "Clear conversation history and start a fresh session"))
+        );
+        assert!(commands.contains(&("stop", "Cancel the current in-flight response")));
+        assert!(!commands.iter().any(|(name, _)| *name == "models"));
+        assert!(!commands.iter().any(|(name, _)| *name == "model"));
+        assert!(!commands.iter().any(|(name, _)| *name == "status"));
+        assert!(!commands.iter().any(|(name, _)| *name == "config"));
+    }
+
+    #[test]
+    fn parse_runtime_command_accepts_status_alias() {
+        assert!(matches!(
+            parse_runtime_command("telegram", "/status"),
+            Some(ChannelRuntimeCommand::ShowConfig)
+        ));
+        assert!(matches!(
+            parse_runtime_command("telegram", "/config"),
+            Some(ChannelRuntimeCommand::ShowConfig)
+        ));
     }
 
     #[test]

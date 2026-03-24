@@ -610,6 +610,50 @@ impl TelegramChannel {
         format!("{}/bot{}/{method}", self.api_base, self.bot_token)
     }
 
+    fn registered_bot_commands(&self) -> Vec<serde_json::Value> {
+        let mut commands: Vec<serde_json::Value> =
+            super::runtime_slash_commands_for_channel("telegram")
+                .into_iter()
+                .map(|(command, description)| {
+                    serde_json::json!({
+                        "command": command,
+                        "description": description,
+                    })
+                })
+                .collect();
+
+        if self.pairing_code_active() {
+            commands.push(serde_json::json!({
+                "command": "bind",
+                "description": "Bind this Telegram account with a one-time pairing code",
+            }));
+        }
+
+        commands
+    }
+
+    async fn register_bot_commands(&self) -> anyhow::Result<()> {
+        let payload = serde_json::json!({
+            "commands": self.registered_bot_commands(),
+        });
+
+        let response = self
+            .http_client()
+            .post(self.api_url("setMyCommands"))
+            .json(&payload)
+            .send()
+            .await
+            .context("Failed to call Telegram setMyCommands")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("Telegram setMyCommands failed: status={status}, body={body}");
+        }
+
+        Ok(())
+    }
+
     /// Synthesize text to speech and send as a Telegram voice note (static version for spawned tasks).
     async fn synthesize_and_send_voice(
         api_base: &str,
@@ -2791,6 +2835,10 @@ impl Channel for TelegramChannel {
             let _ = self.get_bot_username().await;
         }
 
+        if let Err(err) = self.register_bot_commands().await {
+            tracing::warn!("Telegram command registration failed: {err}");
+        }
+
         tracing::info!("Telegram channel listening for messages...");
 
         // Startup probe: claim the getUpdates slot before entering the long-poll loop.
@@ -3317,6 +3365,36 @@ mod tests {
     fn telegram_extract_bind_code_rejects_invalid_forms() {
         assert_eq!(TelegramChannel::extract_bind_code("/bind"), None);
         assert_eq!(TelegramChannel::extract_bind_code("/start"), None);
+    }
+
+    #[test]
+    fn telegram_registered_bot_commands_include_runtime_commands() {
+        let ch = TelegramChannel::new("t".into(), vec!["alice".into()], false);
+        let commands = ch.registered_bot_commands();
+        let command_names: Vec<&str> = commands
+            .iter()
+            .filter_map(|value| value.get("command").and_then(serde_json::Value::as_str))
+            .collect();
+
+        assert!(command_names.contains(&"new"));
+        assert!(command_names.contains(&"stop"));
+        assert!(command_names.contains(&"models"));
+        assert!(command_names.contains(&"model"));
+        assert!(command_names.contains(&"status"));
+        assert!(!command_names.contains(&"config"));
+        assert!(!command_names.contains(&"bind"));
+    }
+
+    #[test]
+    fn telegram_registered_bot_commands_include_bind_when_pairing_active() {
+        let ch = TelegramChannel::new("t".into(), vec![], false);
+        let commands = ch.registered_bot_commands();
+        let command_names: Vec<&str> = commands
+            .iter()
+            .filter_map(|value| value.get("command").and_then(serde_json::Value::as_str))
+            .collect();
+
+        assert!(command_names.contains(&"bind"));
     }
 
     #[test]

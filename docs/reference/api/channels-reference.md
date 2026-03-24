@@ -45,12 +45,16 @@ When running `zeroclaw channel start` (or daemon mode), Telegram and Discord now
 - `/models <provider>` — switch provider for the current sender session
 - `/model` — show current model and cached model IDs (if available)
 - `/model <model-id>` — switch model for the current sender session
+- `/status` — show the current provider/model/route selection for this sender session
 - `/new` — clear conversation history and start a fresh session
+- `/stop` — cancel the current in-flight response for this sender scope
+- `/config` — alias for `/status`
 
 Notes:
 
 - Switching provider or model clears only that sender's in-memory conversation history to avoid cross-model context contamination.
 - `/new` clears the sender's conversation history without changing provider or model selection.
+- Telegram registers these commands with the Bot API at startup so they appear in the Telegram slash-command picker.
 - Model cache previews come from `zeroclaw models refresh --provider <ID>`.
 - These are runtime chat commands, not CLI subcommands.
 

@@ -141,7 +141,12 @@ Runtime in-chat commands (Telegram/Discord while channel server is running):
 - `/models <provider>`
 - `/model`
 - `/model <model-id>`
+- `/status`
 - `/new`
+- `/stop`
+- `/config` (alias for `/status`)
+
+Telegram registers these runtime chat commands with the Bot API at channel startup so they appear in the Telegram slash-command picker. When Telegram pairing is active, `/bind <code>` is also registered.
 
 Channel runtime also watches `config.toml` and hot-applies updates to:
 - `default_provider`
