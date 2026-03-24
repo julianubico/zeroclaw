@@ -142,6 +142,7 @@ pub async fn run_wizard(force: bool) -> Result<Config> {
         default_temperature: 0.7,
         provider_timeout_secs: 120,
         extra_headers: std::collections::HashMap::new(),
+        channel_agent_routes: Vec::new(),
         observability: ObservabilityConfig::default(),
         autonomy: AutonomyConfig::default(),
         backup: crate::config::BackupConfig::default(),
@@ -414,6 +415,7 @@ fn memory_config_defaults_for_backend(backend: &str) -> MemoryConfig {
         embedding_dimensions: 1536,
         vector_weight: 0.7,
         keyword_weight: 0.3,
+        search_mode: crate::config::SearchMode::default(),
         min_relevance_score: 0.4,
         embedding_cache_size: if profile.uses_sqlite_hygiene {
             10000
@@ -582,6 +584,7 @@ async fn run_quick_setup_with_home(
         default_temperature: 0.7,
         provider_timeout_secs: 120,
         extra_headers: std::collections::HashMap::new(),
+        channel_agent_routes: Vec::new(),
         observability: ObservabilityConfig::default(),
         autonomy: AutonomyConfig::default(),
         backup: crate::config::BackupConfig::default(),

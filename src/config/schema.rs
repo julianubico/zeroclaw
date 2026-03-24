@@ -186,6 +186,10 @@ pub struct Config {
     #[serde(default)]
     pub query_classification: QueryClassificationConfig,
 
+    /// Channel-specific agent/model bindings keyed by channel + reply target.
+    #[serde(default)]
+    pub channel_agent_routes: Vec<ChannelAgentRouteConfig>,
+
     /// Heartbeat configuration for periodic health pings (`[heartbeat]`).
     #[serde(default)]
     pub heartbeat: HeartbeatConfig,
@@ -540,6 +544,12 @@ pub struct DelegateAgentConfig {
     /// Temperature override
     #[serde(default)]
     pub temperature: Option<f64>,
+    /// Encourage use of `delegate`/`swarm` for complex multi-step tasks.
+    #[serde(default)]
+    pub auto_delegate: bool,
+    /// Preferred swarm to use when auto-delegation is encouraged.
+    #[serde(default)]
+    pub preferred_swarm: Option<String>,
     /// Max recursion depth for nested delegation
     #[serde(default = "default_max_depth")]
     pub max_depth: u32,
@@ -572,6 +582,30 @@ fn default_delegate_timeout_secs() -> u64 {
 
 fn default_delegate_agentic_timeout_secs() -> u64 {
     DEFAULT_DELEGATE_AGENTIC_TIMEOUT_SECS
+}
+
+/// Channel-specific route binding for a chat or topic/forum thread.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct ChannelAgentRouteConfig {
+    /// Channel ID (e.g. "telegram").
+    pub channel: String,
+    /// Canonical reply target (`chat_id` or `chat_id:thread_id`).
+    pub reply_target: String,
+    /// Named agent binding mode.
+    #[serde(default)]
+    pub agent: Option<String>,
+    /// Provider override binding mode.
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Model override binding mode.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Optional temperature override for provider/model binding mode.
+    #[serde(default)]
+    pub temperature: Option<f64>,
+    /// Optional API key override for provider/model binding mode.
+    #[serde(default)]
+    pub api_key: Option<String>,
 }
 
 // ── Swarms ──────────────────────────────────────────────────────
@@ -1680,6 +1714,42 @@ pub struct CostConfig {
     /// Per-model pricing (USD per 1M tokens)
     #[serde(default)]
     pub prices: std::collections::HashMap<String, ModelPricing>,
+
+    /// Cost enforcement behavior when budget limits are approached or exceeded.
+    #[serde(default)]
+    pub enforcement: CostEnforcementConfig,
+}
+
+/// Configuration for cost enforcement behavior when budget limits are reached.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CostEnforcementConfig {
+    /// Enforcement mode: "warn", "block", or "route_down".
+    #[serde(default = "default_cost_enforcement_mode")]
+    pub mode: String,
+    /// Model hint to route to when budget is exceeded (used with "route_down" mode).
+    #[serde(default)]
+    pub route_down_model: Option<String>,
+    /// Reserve this percentage of budget for critical operations.
+    #[serde(default = "default_reserve_percent")]
+    pub reserve_percent: u8,
+}
+
+fn default_cost_enforcement_mode() -> String {
+    "warn".to_string()
+}
+
+fn default_reserve_percent() -> u8 {
+    10
+}
+
+impl Default for CostEnforcementConfig {
+    fn default() -> Self {
+        Self {
+            mode: default_cost_enforcement_mode(),
+            route_down_model: None,
+            reserve_percent: default_reserve_percent(),
+        }
+    }
 }
 
 /// Per-model pricing entry (USD per 1M tokens).
@@ -1719,6 +1789,7 @@ impl Default for CostConfig {
             warn_at_percent: default_warn_percent(),
             allow_override: false,
             prices: get_default_pricing(),
+            enforcement: CostEnforcementConfig::default(),
         }
     }
 }
@@ -3081,6 +3152,38 @@ pub struct PluginsConfig {
     /// Maximum number of plugins that can be loaded
     #[serde(default = "default_max_plugins")]
     pub max_plugins: usize,
+    /// Plugin signature verification security settings
+    #[serde(default)]
+    pub security: PluginSecurityConfig,
+}
+
+/// Plugin signature verification configuration (`[plugins.security]`).
+///
+/// Controls Ed25519 signature verification for plugin manifests.
+/// In `strict` mode, only plugins signed by a trusted publisher key are loaded.
+/// In `permissive` mode, unsigned or untrusted plugins produce warnings but are
+/// still loaded. In `disabled` mode (the default), no signature checking occurs.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PluginSecurityConfig {
+    /// Signature enforcement mode: "disabled", "permissive", or "strict".
+    #[serde(default = "default_signature_mode")]
+    pub signature_mode: String,
+    /// Hex-encoded Ed25519 public keys of trusted plugin publishers.
+    #[serde(default)]
+    pub trusted_publisher_keys: Vec<String>,
+}
+
+fn default_signature_mode() -> String {
+    "disabled".to_string()
+}
+
+impl Default for PluginSecurityConfig {
+    fn default() -> Self {
+        Self {
+            signature_mode: default_signature_mode(),
+            trusted_publisher_keys: Vec::new(),
+        }
+    }
 }
 
 fn default_plugins_dir() -> String {
@@ -3098,6 +3201,7 @@ impl Default for PluginsConfig {
             plugins_dir: default_plugins_dir(),
             auto_discover: false,
             max_plugins: default_max_plugins(),
+            security: PluginSecurityConfig::default(),
         }
     }
 }
@@ -4652,6 +4756,19 @@ impl Default for QdrantConfig {
     }
 }
 
+/// Search strategy for memory recall.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchMode {
+    /// Pure keyword search (FTS5 BM25)
+    Bm25,
+    /// Pure vector/semantic search
+    Embedding,
+    /// Weighted combination of keyword + vector (default)
+    #[default]
+    Hybrid,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct MemoryConfig {
@@ -4689,6 +4806,9 @@ pub struct MemoryConfig {
     /// Weight for keyword BM25 in hybrid search (0.0–1.0)
     #[serde(default = "default_keyword_weight")]
     pub keyword_weight: f64,
+    /// Search strategy: bm25 (keyword only), embedding (vector only), or hybrid (both).
+    #[serde(default)]
+    pub search_mode: SearchMode,
     /// Minimum hybrid score (0.0–1.0) for a memory to be included in context.
     /// Memories scoring below this threshold are dropped to prevent irrelevant
     /// context from bleeding into conversations. Default: 0.4
@@ -4873,6 +4993,7 @@ impl Default for MemoryConfig {
             embedding_dimensions: default_embedding_dims(),
             vector_weight: default_vector_weight(),
             keyword_weight: default_keyword_weight(),
+            search_mode: SearchMode::default(),
             min_relevance_score: default_min_relevance_score(),
             embedding_cache_size: default_cache_size(),
             chunk_max_tokens: default_chunk_size(),
@@ -5933,6 +6054,8 @@ pub struct ChannelsConfig {
     pub reddit: Option<RedditConfig>,
     /// Bluesky channel configuration (AT Protocol).
     pub bluesky: Option<BlueskyConfig>,
+    /// Voice call channel configuration (Twilio/Telnyx/Plivo).
+    pub voice_call: Option<crate::channels::voice_call::VoiceCallConfig>,
     /// Voice wake word detection channel configuration.
     #[cfg(feature = "voice-wake")]
     pub voice_wake: Option<VoiceWakeConfig>,
@@ -6121,6 +6244,7 @@ impl Default for ChannelsConfig {
             clawdtalk: None,
             reddit: None,
             bluesky: None,
+            voice_call: None,
             #[cfg(feature = "voice-wake")]
             voice_wake: None,
             message_timeout_secs: default_channel_message_timeout_secs(),
@@ -6848,6 +6972,53 @@ pub struct SecurityConfig {
     /// Nevis IAM integration for SSO/MFA authentication and role-based access.
     #[serde(default)]
     pub nevis: NevisConfig,
+
+    /// WebAuthn / FIDO2 hardware key authentication configuration.
+    #[serde(default)]
+    pub webauthn: WebAuthnConfig,
+}
+
+/// WebAuthn / FIDO2 hardware key authentication configuration (`[security.webauthn]`).
+///
+/// Enables registration and authentication via hardware security keys
+/// (YubiKey, SoloKey, etc.) and platform authenticators (Touch ID, Windows Hello).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WebAuthnConfig {
+    /// Enable WebAuthn authentication. Default: false.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Relying Party ID (domain name, e.g. "example.com"). Default: "localhost".
+    #[serde(default = "default_webauthn_rp_id")]
+    pub rp_id: String,
+    /// Relying Party origin URL (e.g. "https://example.com"). Default: "http://localhost:42617".
+    #[serde(default = "default_webauthn_rp_origin")]
+    pub rp_origin: String,
+    /// Relying Party display name. Default: "ZeroClaw".
+    #[serde(default = "default_webauthn_rp_name")]
+    pub rp_name: String,
+}
+
+impl Default for WebAuthnConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            rp_id: default_webauthn_rp_id(),
+            rp_origin: default_webauthn_rp_origin(),
+            rp_name: default_webauthn_rp_name(),
+        }
+    }
+}
+
+fn default_webauthn_rp_id() -> String {
+    "localhost".into()
+}
+
+fn default_webauthn_rp_origin() -> String {
+    "http://localhost:42617".into()
+}
+
+fn default_webauthn_rp_name() -> String {
+    "ZeroClaw".into()
 }
 
 /// OTP validation strategy.
@@ -7925,6 +8096,7 @@ impl Default for Config {
             skills: SkillsConfig::default(),
             model_routes: Vec::new(),
             embedding_routes: Vec::new(),
+            channel_agent_routes: Vec::new(),
             heartbeat: HeartbeatConfig::default(),
             cron: CronConfig::default(),
             channels_config: ChannelsConfig::default(),
@@ -9192,6 +9364,65 @@ impl Config {
             }
         }
 
+        // Channel agent routes
+        for (i, route) in self.channel_agent_routes.iter().enumerate() {
+            if route.channel.trim().is_empty() {
+                anyhow::bail!("channel_agent_routes[{i}].channel must not be empty");
+            }
+            if route.reply_target.trim().is_empty() {
+                anyhow::bail!("channel_agent_routes[{i}].reply_target must not be empty");
+            }
+
+            let has_agent = route
+                .agent
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty());
+            let has_provider = route
+                .provider
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty());
+            let has_model = route
+                .model
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty());
+
+            if has_agent {
+                if has_provider
+                    || has_model
+                    || route.temperature.is_some()
+                    || route.api_key.is_some()
+                {
+                    anyhow::bail!(
+                        "channel_agent_routes[{i}] must define exactly one binding mode: `agent` or (`provider` + `model`)"
+                    );
+                }
+                let agent_name = route.agent.as_deref().map(str::trim).unwrap_or_default();
+                if !self.agents.contains_key(agent_name) {
+                    anyhow::bail!(
+                        "channel_agent_routes[{i}].agent references unknown agent `{agent_name}`"
+                    );
+                }
+            } else if has_provider || has_model {
+                if !has_provider || !has_model {
+                    anyhow::bail!(
+                        "channel_agent_routes[{i}] provider/model binding must set both `provider` and `model`"
+                    );
+                }
+            } else {
+                anyhow::bail!(
+                    "channel_agent_routes[{i}] must define exactly one binding mode: `agent` or (`provider` + `model`)"
+                );
+            }
+
+            if let Some(temperature) = route.temperature {
+                validate_temperature(temperature)
+                    .map_err(|msg| anyhow::anyhow!("channel_agent_routes[{i}].{msg}"))?;
+            }
+        }
+
         for (profile_key, profile) in &self.model_providers {
             let profile_name = profile_key.trim();
             if profile_name.is_empty() {
@@ -9586,6 +9817,10 @@ impl Config {
         // Delegate agent timeouts
         const MAX_DELEGATE_TIMEOUT_SECS: u64 = 3600;
         for (name, agent) in &self.agents {
+            if let Some(temperature) = agent.temperature {
+                validate_temperature(temperature)
+                    .map_err(|msg| anyhow::anyhow!("agents.{name}.{msg}"))?;
+            }
             if let Some(timeout) = agent.timeout_secs {
                 if timeout == 0 {
                     anyhow::bail!("agents.{name}.timeout_secs must be greater than 0");
@@ -9603,6 +9838,16 @@ impl Config {
                 if timeout > MAX_DELEGATE_TIMEOUT_SECS {
                     anyhow::bail!(
                         "agents.{name}.agentic_timeout_secs exceeds max {MAX_DELEGATE_TIMEOUT_SECS}"
+                    );
+                }
+            }
+            if let Some(preferred_swarm) = agent.preferred_swarm.as_deref().map(str::trim) {
+                if preferred_swarm.is_empty() {
+                    anyhow::bail!("agents.{name}.preferred_swarm must not be empty when present");
+                }
+                if !self.swarms.contains_key(preferred_swarm) {
+                    anyhow::bail!(
+                        "agents.{name}.preferred_swarm references unknown swarm `{preferred_swarm}`"
                     );
                 }
             }
@@ -10857,6 +11102,82 @@ default_temperature = 0.7
         assert_eq!(m.purge_after_days, 30);
         assert_eq!(m.conversation_retention_days, 30);
         assert!(m.sqlite_open_timeout_secs.is_none());
+        assert_eq!(m.search_mode, SearchMode::Hybrid);
+    }
+
+    #[test]
+    async fn search_mode_config_deserialization() {
+        let toml_str = r#"
+workspace_dir = "/tmp/workspace"
+config_path = "/tmp/config.toml"
+default_temperature = 0.7
+
+[memory]
+backend = "sqlite"
+auto_save = true
+search_mode = "bm25"
+"#;
+        let parsed = parse_test_config(toml_str);
+        assert_eq!(parsed.memory.search_mode, SearchMode::Bm25);
+
+        let toml_str_embedding = r#"
+workspace_dir = "/tmp/workspace"
+config_path = "/tmp/config.toml"
+default_temperature = 0.7
+
+[memory]
+backend = "sqlite"
+auto_save = true
+search_mode = "embedding"
+"#;
+        let parsed = parse_test_config(toml_str_embedding);
+        assert_eq!(parsed.memory.search_mode, SearchMode::Embedding);
+
+        let toml_str_hybrid = r#"
+workspace_dir = "/tmp/workspace"
+config_path = "/tmp/config.toml"
+default_temperature = 0.7
+
+[memory]
+backend = "sqlite"
+auto_save = true
+search_mode = "hybrid"
+"#;
+        let parsed = parse_test_config(toml_str_hybrid);
+        assert_eq!(parsed.memory.search_mode, SearchMode::Hybrid);
+    }
+
+    #[test]
+    async fn search_mode_defaults_to_hybrid_when_omitted() {
+        let toml_str = r#"
+workspace_dir = "/tmp/workspace"
+config_path = "/tmp/config.toml"
+default_temperature = 0.7
+
+[memory]
+backend = "sqlite"
+auto_save = true
+"#;
+        let parsed = parse_test_config(toml_str);
+        assert_eq!(parsed.memory.search_mode, SearchMode::Hybrid);
+    }
+
+    #[test]
+    async fn search_mode_serde_roundtrip() {
+        let json_bm25 = serde_json::to_string(&SearchMode::Bm25).unwrap();
+        assert_eq!(json_bm25, "\"bm25\"");
+        let parsed: SearchMode = serde_json::from_str(&json_bm25).unwrap();
+        assert_eq!(parsed, SearchMode::Bm25);
+
+        let json_embedding = serde_json::to_string(&SearchMode::Embedding).unwrap();
+        assert_eq!(json_embedding, "\"embedding\"");
+        let parsed: SearchMode = serde_json::from_str(&json_embedding).unwrap();
+        assert_eq!(parsed, SearchMode::Embedding);
+
+        let json_hybrid = serde_json::to_string(&SearchMode::Hybrid).unwrap();
+        assert_eq!(json_hybrid, "\"hybrid\"");
+        let parsed: SearchMode = serde_json::from_str(&json_hybrid).unwrap();
+        assert_eq!(parsed, SearchMode::Hybrid);
     }
 
     #[test]
@@ -10894,6 +11215,7 @@ default_temperature = 0.7
             default_temperature: 0.5,
             provider_timeout_secs: 120,
             extra_headers: HashMap::new(),
+            channel_agent_routes: Vec::new(),
             observability: ObservabilityConfig {
                 backend: "log".into(),
                 ..ObservabilityConfig::default()
@@ -10978,6 +11300,7 @@ default_temperature = 0.7
                 clawdtalk: None,
                 reddit: None,
                 bluesky: None,
+                voice_call: None,
                 #[cfg(feature = "voice-wake")]
                 voice_wake: None,
                 message_timeout_secs: 300,
@@ -11493,6 +11816,7 @@ default_temperature = 0.7
             default_temperature: 0.9,
             provider_timeout_secs: 120,
             extra_headers: HashMap::new(),
+            channel_agent_routes: Vec::new(),
             observability: ObservabilityConfig::default(),
             autonomy: AutonomyConfig::default(),
             backup: BackupConfig::default(),
@@ -11616,6 +11940,8 @@ default_temperature = 0.7
                 system_prompt: None,
                 api_key: Some("agent-credential".into()),
                 temperature: None,
+                auto_delegate: false,
+                preferred_swarm: None,
                 max_depth: 3,
                 agentic: false,
                 allowed_tools: Vec::new(),
@@ -11981,6 +12307,7 @@ allowed_users = ["@ops:matrix.org"]
             clawdtalk: None,
             reddit: None,
             bluesky: None,
+            voice_call: None,
             #[cfg(feature = "voice-wake")]
             voice_wake: None,
             message_timeout_secs: 300,
@@ -12333,6 +12660,7 @@ channel_ids = ["C123", "D456"]
             clawdtalk: None,
             reddit: None,
             bluesky: None,
+            voice_call: None,
             #[cfg(feature = "voice-wake")]
             voice_wake: None,
             message_timeout_secs: 300,
@@ -14769,6 +15097,44 @@ require_otp_to_resume = true
         assert!(config.swarms.contains_key("pipeline"));
     }
 
+    #[test]
+    async fn channel_agent_route_deserializes_with_model_binding() {
+        let toml_str = r#"
+            [[channel_agent_routes]]
+            channel = "telegram"
+            reply_target = "-100200300:42"
+            provider = "openai"
+            model = "gpt-5.4"
+            temperature = 0.2
+        "#;
+        let config = parse_test_config(toml_str);
+        assert_eq!(config.channel_agent_routes.len(), 1);
+        let route = &config.channel_agent_routes[0];
+        assert_eq!(route.channel, "telegram");
+        assert_eq!(route.reply_target, "-100200300:42");
+        assert_eq!(route.provider.as_deref(), Some("openai"));
+        assert_eq!(route.model.as_deref(), Some("gpt-5.4"));
+        assert_eq!(route.temperature, Some(0.2));
+    }
+
+    #[test]
+    async fn validate_rejects_invalid_channel_agent_route_binding() {
+        let mut config = Config::default();
+        config.channel_agent_routes.push(ChannelAgentRouteConfig {
+            channel: "telegram".into(),
+            reply_target: "-100200300:42".into(),
+            agent: Some("finance".into()),
+            provider: Some("openai".into()),
+            model: Some("gpt-5.4".into()),
+            temperature: None,
+            api_key: None,
+        });
+
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("channel_agent_routes[0]"));
+        assert!(err.contains("exactly one binding mode"));
+    }
+
     #[tokio::test]
     async fn nevis_client_secret_encrypt_decrypt_roundtrip() {
         let dir = std::env::temp_dir().join(format!(
@@ -15272,5 +15638,20 @@ auto_approve = ["file_read", "file_write", "file_edit", "memory_recall", "memory
                 "Docker config auto_approve missing expected tool: {tool}"
             );
         }
+    }
+
+    #[test]
+    async fn cost_enforcement_config_defaults() {
+        let config = CostEnforcementConfig::default();
+        assert_eq!(config.mode, "warn");
+        assert_eq!(config.route_down_model, None);
+        assert_eq!(config.reserve_percent, 10);
+    }
+
+    #[test]
+    async fn cost_config_includes_enforcement() {
+        let config = CostConfig::default();
+        assert_eq!(config.enforcement.mode, "warn");
+        assert_eq!(config.enforcement.reserve_percent, 10);
     }
 }
