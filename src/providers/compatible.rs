@@ -2019,6 +2019,7 @@ impl Provider for OpenAiCompatibleProvider {
                 stream: Some(options.enabled),
                 tools: tools.clone(),
                 tool_choice: tools.as_ref().map(|_| "auto".to_string()),
+                max_tokens: self.max_tokens,
             })
         } else {
             let messages = effective_messages
@@ -2042,6 +2043,7 @@ impl Provider for OpenAiCompatibleProvider {
                 stream: Some(options.enabled),
                 tools: None,
                 tool_choice: None,
+                max_tokens: self.max_tokens,
             })
         };
 

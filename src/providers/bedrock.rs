@@ -490,7 +490,10 @@ impl BedrockProvider {
             };
         }
         let auth = AwsCredentials::resolve().await.ok().map(BedrockAuth::SigV4);
-        Self { auth, max_tokens: DEFAULT_MAX_TOKENS }
+        Self {
+            auth,
+            max_tokens: DEFAULT_MAX_TOKENS,
+        }
     }
 
     /// Create a provider using a Bearer token for authentication.
@@ -1366,7 +1369,10 @@ mod tests {
 
     #[tokio::test]
     async fn chat_fails_without_credentials() {
-        let provider = BedrockProvider { auth: None, max_tokens: DEFAULT_MAX_TOKENS };
+        let provider = BedrockProvider {
+            auth: None,
+            max_tokens: DEFAULT_MAX_TOKENS,
+        };
         let result = provider
             .chat_with_system(None, "hello", "anthropic.claude-sonnet-4-6", 0.7)
             .await;
@@ -1700,14 +1706,20 @@ mod tests {
 
     #[tokio::test]
     async fn warmup_without_credentials_is_noop() {
-        let provider = BedrockProvider { auth: None, max_tokens: DEFAULT_MAX_TOKENS };
+        let provider = BedrockProvider {
+            auth: None,
+            max_tokens: DEFAULT_MAX_TOKENS,
+        };
         let result = provider.warmup().await;
         assert!(result.is_ok());
     }
 
     #[test]
     fn capabilities_reports_native_tool_calling() {
-        let provider = BedrockProvider { auth: None, max_tokens: DEFAULT_MAX_TOKENS };
+        let provider = BedrockProvider {
+            auth: None,
+            max_tokens: DEFAULT_MAX_TOKENS,
+        };
         let caps = provider.capabilities();
         assert!(caps.native_tool_calling);
     }
