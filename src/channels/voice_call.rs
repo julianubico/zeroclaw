@@ -365,6 +365,7 @@ impl VoiceCallChannel {
             channel: "voice_call".to_string(),
             timestamp: chrono::Utc::now().timestamp().unsigned_abs(),
             thread_ts: Some(call_id.to_string()),
+            conversation_scope_id: None,
             interruption_scope_id: Some(call_id.to_string()),
             attachments: vec![],
         };
